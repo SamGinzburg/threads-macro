@@ -1,4 +1,4 @@
-use z3::{Config, Context, Solver};
+use z3::{Solver};
 use std::collections::HashMap;
 
 pub fn solve_constraints(ctx: z3::Context, lst: Vec<Vec<String>>) -> z3::SatResult {
@@ -70,5 +70,7 @@ pub fn solve_constraints(ctx: z3::Context, lst: Vec<Vec<String>>) -> z3::SatResu
         // after each loop reset the previous_constant to None
         previous_constant = None;
     }
-    solver.check()
+    let r = solver.check();
+    //dbg!("{:?}", solver.get_model().to_string());
+    r
 }

@@ -1,9 +1,11 @@
 #![feature(box_patterns)]
+#![feature(duration_float)]
 
 extern crate proc_macro;
 extern crate syn;
 extern crate regex;
 extern crate z3;
+extern crate quote;
 
 mod solver;
 
@@ -15,6 +17,10 @@ use syn::Stmt::*;
 use std::collections::HashMap;
 use z3::{Config, Context, Solver};
 use solver::solve_constraints;
+use quote::{quote, format_ident};
+use syn::export::TokenStream2;
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 fn parse_stmts_vec(stmts: Vec<syn::Stmt>,
                    lock_subst: HashMap<String, bool>,
@@ -229,9 +235,15 @@ fn parse_ast(expr: syn::Expr,
 // in your proc-macro crate
 #[proc_macro]
 pub fn threads(input: TokenStream) -> TokenStream {
-    let mut ret: Option<TokenStream> = None;
+    let mut ret: Vec<TokenStream2> = vec![];
     let mut locks: HashMap<String, bool> = HashMap::new();
     let mut orderings = vec![];
+
+    let mut block_preamble: Option<TokenStream2> = None;
+    let mut count = 0;
+    let mut thread_joins: Vec<TokenStream2> = vec![];
+
+
     // parse input to extract lock declaration
     let re = Regex::new(r"\{\s*locks\s*=\s*\{(.*?)\}").unwrap();
     for a in input.clone().into_iter() {
@@ -247,6 +259,28 @@ pub fn threads(input: TokenStream) -> TokenStream {
                     locks.insert(String::from(s.trim()), true);
                 }
             }
+
+            // now create the block preamble for each thread
+            /*
+                {locks = {a, b, c}}, {
+                    let a = Arc::new(Mutex::new(0));
+                    let b = Arc::new(Mutex::new(0));
+                    let c = Arc::new(Mutex::new(0));
+                    etc....
+             */
+
+            let mut temp_vec = vec![];
+            // order doesn't matter here
+            for (k, v) in &locks {
+                let varname = format_ident!("{}", k);
+                let q = quote! {
+                    let #varname = Arc::new(Mutex::new(0));
+                };
+                temp_vec.push(q);
+            }
+
+             block_preamble = Some(quote! { #(#temp_vec)* } );
+
         // else if we have the ',' token
         } else if &a.to_string() == "," {
             dbg!("comma found!");
@@ -259,12 +293,26 @@ pub fn threads(input: TokenStream) -> TokenStream {
             let expr = syn::parse_str::<Expr>(&a.to_string()).unwrap();
             // parse the AST
             orderings.extend(parse_ast(expr.clone(), locks.clone(), vec![]));
-            ret = Some(a.clone().into());
+            let preamble = match block_preamble.clone() {
+                Some(p) => {
+                    let varname = format_ident!("thread_{}", count.to_string());
+                    let q = quote! {
+                        let #varname = thread::spawn(move || {
+                            #p
+                            #expr
+                        });
+                    };
+                    ret.push(q);
+                    thread_joins.push(quote! { #varname.join(); } );
+                    count += 1;
+                },
+                None => panic!("Improperly called threads! macro, must specify locks as first parameter"),
+            };
         }
     }
 
     // merge all lock orderings and conditions + solve in z3
-    //dbg!(orderings.clone());
+    dbg!(orderings.clone());
 
     let cfg = Config::new();
     let ctx = Context::new(&cfg);
@@ -276,6 +324,7 @@ pub fn threads(input: TokenStream) -> TokenStream {
         },
         z3::SatResult::Unsat => {
             panic!("Potential Deadlock detected");
+
         },
         z3::SatResult::Unknown => {
             panic!("SAT solver returned unknown -- potential deadlock detected!");
@@ -283,5 +332,10 @@ pub fn threads(input: TokenStream) -> TokenStream {
     }
 
     // return output
-    ret.unwrap()
+    let f = quote! {
+        #(#ret)*
+        #(#thread_joins)*
+    };
+
+    f.into()
 }
