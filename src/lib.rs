@@ -77,7 +77,6 @@ fn coalesce(input: Vec<Vec<String>>) -> Vec<String> {
  * 1) unsafe code block found (DONE)
  * 2) mutex or sync primitive used without valid identifier
  * 3) New mutex is created
- * 4) existing identifier is moved out of scope
  * 
  */
 fn parse_ast(expr: syn::Expr,
@@ -198,7 +197,22 @@ fn parse_ast(expr: syn::Expr,
             }
             
             r1
-        },
+        },/*
+        Expr::ExprMatch(exprmatch) => {
+            let expr1 = exprmatch.expr;
+
+            let mut r1 = parse_ast(expr1, lock_subst.clone(), orderings.clone());
+
+            for arm in exprmatch.arms {
+                let body = *arm.body;
+                let r2 = parse_ast(body, lock_subst.clone(), orderings.clone());
+                if r2.len() > 0 {
+                    r1.extend(r2);
+                }
+            }
+
+            r1
+        }, */
         Expr::Unsafe(_) => {
             panic!("unsafe block inside threads macro is not permitted!");
         },
@@ -274,7 +288,7 @@ pub fn threads(input: TokenStream) -> TokenStream {
             for (k, v) in &locks {
                 let varname = format_ident!("{}", k);
                 let q = quote! {
-                    let #varname = Arc::new(Mutex::new(0));
+                    let #varname = ::std::sync::Arc::new(::std::sync::Mutex::new(0));
                 };
                 temp_vec.push(q);
             }
@@ -297,7 +311,7 @@ pub fn threads(input: TokenStream) -> TokenStream {
                 Some(p) => {
                     let varname = format_ident!("thread_{}", count.to_string());
                     let q = quote! {
-                        let #varname = thread::spawn(move || {
+                        let #varname = ::std::thread::spawn(move || {
                             #p
                             #expr
                         });
@@ -324,7 +338,6 @@ pub fn threads(input: TokenStream) -> TokenStream {
         },
         z3::SatResult::Unsat => {
             panic!("Potential Deadlock detected");
-
         },
         z3::SatResult::Unknown => {
             panic!("SAT solver returned unknown -- potential deadlock detected!");
