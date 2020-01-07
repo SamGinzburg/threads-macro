@@ -21,7 +21,7 @@ fn main() {
 		person 5: e, a
 
 	 */
-    threads!({locks = {a, b, c, d, e}}, {
+    threads!({locks = {a(0), b(0), c(0), d(0), e(0)}}, {
        loop {
 		   println!("think");
 		   a.lock().unwrap();

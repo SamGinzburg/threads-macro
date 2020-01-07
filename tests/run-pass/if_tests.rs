@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 fn main() {
-    threads!({locks = {a, b, c}}, {
+    threads!({locks = {a(0), b(0), c(0)}}, {
         if true {
             a.lock().unwrap();
             b.lock().unwrap();

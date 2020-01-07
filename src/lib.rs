@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 fn parse_stmts_vec(stmts: Vec<syn::Stmt>,
-                   lock_subst: HashMap<String, bool>,
+                   lock_subst: HashMap<String, String>,
                    in_lst: Vec<String>) -> Vec<Vec<String>> {
     let mut ret: Vec<Vec<String>> = vec![];
     let subst = lock_subst.clone();
@@ -80,7 +80,7 @@ fn coalesce(input: Vec<Vec<String>>) -> Vec<String> {
  * 
  */
 fn parse_ast(expr: syn::Expr,
-             lock_subst: HashMap<String, bool>,
+             lock_subst: HashMap<String, String>,
              orderings: Vec<String>) -> Vec<Vec<String>> {
     /*println!("start parsing: {:?}\t{:?}\t{:?}", expr.clone(),
                                                 lock_subst.clone(),
@@ -250,7 +250,7 @@ fn parse_ast(expr: syn::Expr,
 #[proc_macro]
 pub fn threads(input: TokenStream) -> TokenStream {
     let mut ret: Vec<TokenStream2> = vec![];
-    let mut locks: HashMap<String, bool> = HashMap::new();
+    let mut locks: HashMap<String, String> = HashMap::new();
     let mut orderings = vec![];
 
     let mut block_preamble: Option<TokenStream2> = None;
@@ -260,6 +260,8 @@ pub fn threads(input: TokenStream) -> TokenStream {
 
     // parse input to extract lock declaration
     let re = Regex::new(r"\{\s*locks\s*=\s*\{(.*?)\}").unwrap();
+    let data = Regex::new(r"\((.*?)\)").unwrap();
+    let identifier_regex = Regex::new(r"(.*?)\s*\(").unwrap();
     for a in input.clone().into_iter() {
         dbg!("capture group: {}", &a);
         // if lock decl block, add lock values to block
@@ -268,32 +270,46 @@ pub fn threads(input: TokenStream) -> TokenStream {
             let lock_names = re.captures(a_str).unwrap()
                                .get(1).map_or("", |m| m.as_str()); 
             for s in lock_names.split(",") {
-                dbg!("{}", s.trim());
-                if s.trim() != "" {
-                    locks.insert(String::from(s.trim()), true);
+                if data.is_match(&s.trim()) && s.trim() != "" {
+                    let data = data.captures(s.trim()).unwrap()
+                                    .get(1).map_or("", |m| m.as_str()); 
+                    let final_ident = identifier_regex.captures(s.trim()).unwrap()
+                                                       .get(1).map_or("", |m| m.as_str());
+                    dbg!("{}", final_ident);
+                    dbg!("{}", data);
+                    locks.insert(String::from(final_ident), String::from(data));
+                } else {
+                    panic!("Invalidly formatted lock declaration section: locks = {identifier(data)...}");
                 }
             }
 
-            // now create the block preamble for each thread
+            // now create the global block preamble
             /*
-                {locks = {a, b, c}}, {
                     let a = Arc::new(Mutex::new(0));
                     let b = Arc::new(Mutex::new(0));
                     let c = Arc::new(Mutex::new(0));
+                {locks = {a, b, c}}, {
                     etc....
              */
 
             let mut temp_vec = vec![];
             // order doesn't matter here
             for (k, v) in &locks {
-                let varname = format_ident!("{}", k);
+                let varname = format_ident!("_threads_macro_{}", k);
+                let data = syn::parse_str::<Expr>(&v.to_string()).unwrap();
+
+                // this goes at the very top of the macro
+                //dbg!("{:?}", varname.clone());
+                //dbg!("{:?}", data.clone());
+
                 let q = quote! {
-                    let #varname = ::std::sync::Arc::new(::std::sync::Mutex::new(0));
+                    let #varname = ::std::sync::Arc::new(::std::sync::Mutex::new(#data));
                 };
                 temp_vec.push(q);
             }
+            
 
-             block_preamble = Some(quote! { #(#temp_vec)* } );
+            block_preamble = Some(quote! { #(#temp_vec)* } );
 
         // else if we have the ',' token
         } else if &a.to_string() == "," {
@@ -309,15 +325,39 @@ pub fn threads(input: TokenStream) -> TokenStream {
             orderings.extend(parse_ast(expr.clone(), locks.clone(), vec![]));
             let preamble = match block_preamble.clone() {
                 Some(p) => {
-                    let varname = format_ident!("thread_{}", count.to_string());
+
+                    // for each lock, we need to clone it
+                    let mut cloned_lock_builder = vec![];
+                    let mut internal_lock_builder = vec![];
+                    for (k, v) in &locks {
+                        let varname = format_ident!("_thread_{}_lock_{}", count.to_string(), k);
+                        let lockid = format_ident!("_threads_macro_{}", k);
+                        let q = quote! {
+                            let #varname = ::std::sync::Arc::clone(&#lockid);
+                        };
+
+                        let internal_varname = format_ident!("{}", k);
+
+                        let q2 = quote! {
+                            let #internal_varname = #varname;
+                        };
+
+                        cloned_lock_builder.push(q);
+                        internal_lock_builder.push(q2);
+                    }
+
+                    let varname = format_ident!("_thread_{}", count.to_string());
                     let q = quote! {
+                        #(#cloned_lock_builder)*
                         let #varname = ::std::thread::spawn(move || {
-                            #p
+                            #(#internal_lock_builder)*
                             #expr
                         });
                     };
                     ret.push(q);
-                    thread_joins.push(quote! { #varname.join(); } );
+                    thread_joins.push(quote! {
+                        #varname.join(); 
+                    } );
                     count += 1;
                 },
                 None => panic!("Improperly called threads! macro, must specify locks as first parameter"),
@@ -344,10 +384,31 @@ pub fn threads(input: TokenStream) -> TokenStream {
         }
     }
 
+
+    let preamble = match block_preamble {
+        Some(p) => p,
+        None => panic!("Unable to generate block preamble - check macro formatting"),
+    };
+
+    let mut export_lock_builder = vec![];
+    for (k, v) in &locks {
+        let varname = format_ident!("_export_threads_lock_{}", k);
+        let lockid = format_ident!("_threads_macro_{}", k);
+        let export_var_name = format_ident!("{}", k);
+
+        let q = quote! {
+            let #varname = ::std::sync::Arc::clone(&#lockid);
+            let #export_var_name = #varname;
+        };
+        export_lock_builder.push(q);
+    }
+
     // return output
     let f = quote! {
+        #preamble
         #(#ret)*
         #(#thread_joins)*
+        #(#export_lock_builder)*
     };
 
     f.into()
