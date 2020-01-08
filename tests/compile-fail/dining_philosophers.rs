@@ -5,8 +5,6 @@
 extern crate threads_macro;
 
 use threads_macro::threads;
-use std::thread;
-use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 
 fn main() {
