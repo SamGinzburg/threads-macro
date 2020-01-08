@@ -22,42 +22,6 @@ use syn::export::TokenStream2;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-fn parse_stmts_vec(stmts: Vec<syn::Stmt>,
-                   lock_subst: HashMap<String, String>,
-                   in_lst: Vec<String>) -> Vec<Vec<String>> {
-    let mut ret: Vec<Vec<String>> = vec![];
-    let subst = lock_subst.clone();
-    let mut temp_lst = in_lst.clone();
-    for statement in stmts {
-        //dbg!("{:?}", statement.clone());
-        let temp = match statement {
-            Local(l) => {
-                let pat = l.pat;
-                let init = l.init;
-
-                dbg!(pat);
-                dbg!(init);
-
-                vec![]
-            },
-            Item(i) => panic!("item"),
-            Expr(nested_e) => {
-                let r1 = parse_ast(nested_e, subst.clone(), temp_lst.clone());
-                // update in_lst for next iteration
-                //dbg!("r1 in parse_vec:\t{:?}", r1.clone());
-                //temp_lst = r1[r1.len() - 1].clone();
-                r1
-            },
-            Semi(nested_e, _) => parse_ast(nested_e, subst.clone(), temp_lst.clone()),
-        };
-        if temp.len() > 0 {
-            ret.extend(temp);
-        }
-        dbg!("ret in vec stmts {:?}", ret.clone());
-    }
-    ret
-}
-
 fn coalesce(input: Vec<Vec<String>>) -> Vec<String> {
     let mut ret: Vec<String> = vec![];
     for v in &input {
@@ -65,6 +29,61 @@ fn coalesce(input: Vec<Vec<String>>) -> Vec<String> {
             ret.push(nested.clone());
         }
     }
+    ret
+}
+
+fn parse_stmts_vec(stmts: Vec<syn::Stmt>,
+                   lock_subst: HashMap<String, String>,
+                   in_lst: Vec<String>) -> Vec<Vec<String>> {
+    let mut ret: Vec<Vec<String>> = vec![];
+    let subst = lock_subst.clone();
+    let temp_lst = in_lst.clone();
+    let mut locals = vec![];
+    let mut expr_lst = vec![];
+    for statement in stmts {
+        //dbg!("{:?}", statement.clone());
+        let temp = match statement {
+            Local(l) => {
+                let pat = l.clone().pat;
+                let init = l.clone().init;
+
+                // TODO: check for assignment of locks here
+
+                dbg!(pat.clone());
+                dbg!(init.clone());
+
+                let r1 = match init.clone() {
+                    Some((_, e)) => {
+                        parse_ast(*e, subst.clone(), temp_lst.clone())
+                    },
+                    None => {
+                        vec![]
+                    }
+                };
+                locals.extend(r1);
+            },
+            Item(i) => panic!("item"),
+            Expr(nested_e) => {
+                let r1 = parse_ast(nested_e, subst.clone(), temp_lst.clone());
+                expr_lst.extend(r1);
+            },
+            Semi(nested_e, _) => {
+                let r1 = parse_ast(nested_e, subst.clone(), temp_lst.clone());
+                expr_lst.extend(r1);
+            },
+        };
+        dbg!("ret in vec stmts {:?}", ret.clone());
+    }
+
+    if locals.len() > 0 {
+        let ord = coalesce(locals);
+        ret.extend(vec![ord]);
+    }
+
+    if expr_lst.len() > 0 {
+        ret.extend(expr_lst);
+    }
+
     ret
 }
 
@@ -98,9 +117,9 @@ fn parse_ast(expr: syn::Expr,
 
             let mut r1 = parse_ast(*cond, lock_subst.clone(), orderings.clone());
             
-            let mut r2 = parse_stmts_vec(br1.stmts, lock_subst.clone(), orderings.clone());
+            let r2 = parse_stmts_vec(br1.stmts, lock_subst.clone(), orderings.clone());
 
-            let mut r3 = match br2 {
+            let r3 = match br2 {
                 Some((_, box e)) => parse_ast(e, lock_subst.clone(), orderings.clone()),
                 None => {
                     dbg!("parsed else token");
@@ -322,6 +341,7 @@ pub fn threads(input: TokenStream) -> TokenStream {
             // for each thread block, extract lock orderings & conditions
             let expr = syn::parse_str::<Expr>(&a.to_string()).unwrap();
             // parse the AST
+            //let ord = coalesce(parse_ast(expr.clone(), locks.clone(), vec![]));
             orderings.extend(parse_ast(expr.clone(), locks.clone(), vec![]));
             let preamble = match block_preamble.clone() {
                 Some(p) => {
