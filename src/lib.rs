@@ -12,79 +12,72 @@ mod solver;
 use regex::Regex;
 use proc_macro::TokenStream;
 use syn::Expr;
-use syn::Expr::*;
 use syn::Stmt::*;
+use syn::Expr::*;
 use std::collections::HashMap;
-use z3::{Config, Context, Solver};
+use z3::{Config, Context};
 use solver::solve_constraints;
 use quote::{quote, format_ident};
 use syn::export::TokenStream2;
-use std::sync::{Arc, Mutex};
-use std::thread;
 
-fn coalesce(input: Vec<Vec<String>>) -> Vec<String> {
-    let mut ret: Vec<String> = vec![];
-    for v in &input {
-        for nested in v.clone() {
-            ret.push(nested.clone());
+fn extend_orderings(first: Vec<Vec<String>>, second: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    let mut final_lst: Vec<Vec<String>> = vec![];
+
+    if first.len() > 0 {
+        for string_one in &first {
+            for string_two in &second {
+                let mut temp1: Vec<String> = string_one.clone();
+                temp1.extend(string_two.clone());
+                final_lst.push(temp1);
+            }
         }
+    } else {
+        final_lst = second;
     }
-    ret
+
+    final_lst
 }
 
 fn parse_stmts_vec(stmts: Vec<syn::Stmt>,
                    lock_subst: HashMap<String, String>,
-                   in_lst: Vec<String>) -> Vec<Vec<String>> {
-    let mut ret: Vec<Vec<String>> = vec![];
-    let subst = lock_subst.clone();
-    let temp_lst = in_lst.clone();
-    let mut locals = vec![];
-    let mut expr_lst = vec![];
+                   in_lst: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    let mut final_orderings: Vec<Vec<String>> = in_lst.clone();
     for statement in stmts {
-        //dbg!("{:?}", statement.clone());
-        let temp = match statement {
+        //println!("{:?}", statement);
+        let orderings = match statement {
             Local(l) => {
                 let pat = l.clone().pat;
                 let init = l.clone().init;
-
-                // TODO: check for assignment of locks here
-
-                dbg!(pat.clone());
-                dbg!(init.clone());
-
-                let r1 = match init.clone() {
-                    Some((_, e)) => {
-                        parse_ast(*e, subst.clone(), temp_lst.clone())
+                match init {
+                    Some((_, expr)) => {
+                        parse_ast(*expr, lock_subst.clone(), in_lst.clone())
                     },
                     None => {
                         vec![]
-                    }
-                };
-                locals.extend(r1);
+                    },
+                }
             },
-            Item(i) => panic!("item"),
+            Item(i) => {
+                vec![]
+            },
             Expr(nested_e) => {
-                let r1 = parse_ast(nested_e, subst.clone(), temp_lst.clone());
-                expr_lst.extend(r1);
+                parse_ast(nested_e, lock_subst.clone(), in_lst.clone())
             },
             Semi(nested_e, _) => {
-                let r1 = parse_ast(nested_e, subst.clone(), temp_lst.clone());
-                expr_lst.extend(r1);
+                parse_ast(nested_e, lock_subst.clone(), in_lst.clone())
             },
         };
-        dbg!("ret in vec stmts {:?}", ret.clone());
+        /*
+         * At the end of each iteration we have a new set of orderings for each statement
+         * since each statement can be another block of expressions.
+         * We need to properly extend the previous set of orderings multiplicatively.
+         * EX: if we previously had [["a", "b"]], and we just obtained [["b"], ["c"]],
+         * we get a new set of orderings: [["a", "b", "b"], ["a", "b", "c"]]
+         */
+        final_orderings = extend_orderings(final_orderings.clone(), orderings.clone());
     }
 
-    if locals.len() > 0 {
-        let ord = coalesce(locals);
-        ret.extend(vec![ord]);
-    }
-
-    if expr_lst.len() > 0 {
-        ret.extend(expr_lst);
-    }
-
-    ret
+    final_orderings
 }
 
 /*
@@ -93,54 +86,75 @@ fn parse_stmts_vec(stmts: Vec<syn::Stmt>,
  * 
  * Panic situations:
  * 
- * 1) unsafe code block found (DONE)
+ * 1) unsafe code block found
  * 2) mutex or sync primitive used without valid identifier
  * 3) New mutex is created
  * 
  */
 fn parse_ast(expr: syn::Expr,
              lock_subst: HashMap<String, String>,
-             orderings: Vec<String>) -> Vec<Vec<String>> {
-    /*println!("start parsing: {:?}\t{:?}\t{:?}", expr.clone(),
-                                                lock_subst.clone(),
-                                                orderings.clone()); */
-    let mut ret = vec![orderings.clone()];
-    let lst = match expr {
+             orderings: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    let result = match expr {
         Expr::Block(e) => {
             //dbg!("block found! {:?}", e);
             parse_stmts_vec(e.block.stmts, lock_subst.clone(), orderings.clone())
         },
         Expr::If(e) => {
+            let mut ret: Vec<Vec<String>> = vec![];
             let cond = e.cond;
-            let br1 = e.then_branch;
+            let br1 = e.then_branch.stmts;
             let br2 = e.else_branch;
 
-            let mut r1 = parse_ast(*cond, lock_subst.clone(), orderings.clone());
-            
-            let r2 = parse_stmts_vec(br1.stmts, lock_subst.clone(), orderings.clone());
-
+            let r1 = parse_ast(*cond, lock_subst.clone(), orderings.clone());
+            let r2 = parse_stmts_vec(br1, lock_subst.clone(), orderings.clone());
             let r3 = match br2 {
-                Some((_, box e)) => parse_ast(e, lock_subst.clone(), orderings.clone()),
+                Some((_, expr)) => {
+                    parse_ast(*expr, lock_subst.clone(), orderings.clone())
+                }
                 None => {
-                    dbg!("parsed else token");
                     vec![]
                 },
             };
-        
-            let r2_coalesced = coalesce(r2.clone());
-            let r3_coalesced = coalesce(r3.clone());
 
-            dbg!("r2:\t{:?}", r2_coalesced.clone());
-            dbg!("r3:\t{:?}", r3_coalesced.clone());
+            let mut r4: Vec<Vec<String>> = r1.clone();
+            r4.extend(r2.clone());
 
-            if r2_coalesced.len() > 0 {
-                r1.insert(r1.len(), r2_coalesced);
+            let mut r5: Vec<Vec<String>> = r1.clone();
+            r5.extend(r3.clone());
+            ret.extend(r4);
+            ret.extend(r5);
+            ret
+        },
+        /*
+         * Method calls are tricky, we want to ensure the following properties
+         * 1) We can allow a lock reference to be borrowed, but only 1 at a time
+         * 2) We want to track all <identifier>.lock() function calls to extract
+         *    lock orderings.
+         * 3) When we do call <identifier>.lock(), we want to ensure that
+         *    <identifier> is in the valid subset of static identifiers.
+         */
+        Expr::MethodCall(m) => {
+            let receiver = m.clone().receiver;
+            let mut r1 = parse_ast(*receiver.clone(), lock_subst.clone(), orderings.clone());
+            let method_ident = m.method.to_string();
+
+            /*
+             * If we find a lock() call, add the identifier to the current set of lock
+             * orderings.
+             */
+            if method_ident.clone() == "lock" {
+                let lock_name = match *receiver {
+                    Path(p) => {
+                        let path = String::from(&p.path.segments[0].ident.to_string());
+                        path
+                    },
+                    _ => String::from("")
+                };
+
+                if lock_subst.contains_key(&lock_name.clone()) {
+                    r1.push(vec![lock_name.clone()]);
+                }
             }
-
-            if r3_coalesced.len() > 0 {
-                r1.insert(r1.len(), r3_coalesced);
-            }
-            dbg!("if:\t{:?}", r1.clone());
             r1
         },
         Expr::While(while_expr) => {
@@ -150,22 +164,13 @@ fn parse_ast(expr: syn::Expr,
             let mut r1 = parse_ast(*cond, lock_subst.clone(), orderings.clone());
             let r2 = parse_stmts_vec(body.stmts, lock_subst.clone(), orderings.clone());
 
-            if r2.len() > 0 {
-                r1.extend(r2);
-            }
+            r1.extend(r2);
 
             r1
         },
         Expr::Loop(l) => {
             let body = l.body;
-            let r1 = parse_stmts_vec(body.stmts, lock_subst.clone(), orderings.clone());
-
-            let r1_coalesced = coalesce(r1.clone());
-
-            //dbg!("loop:\t{:?}", r1_coalesced.clone());
-
-            vec![r1_coalesced]
-            //vec![]
+            parse_stmts_vec(body.stmts, lock_subst.clone(), orderings.clone())
         },
         Expr::ForLoop(fl) => {
             let expr = fl.expr;
@@ -174,9 +179,8 @@ fn parse_ast(expr: syn::Expr,
             let mut r1 = parse_ast(*expr, lock_subst.clone(), orderings.clone());
             let r2 = parse_stmts_vec(body.stmts, lock_subst.clone(), orderings.clone());
 
-            if r2.len() > 0 {
-                r1.extend(r2);
-            }
+            r1.extend(r2);
+
             r1
         },
         Expr::Match(m) => {
@@ -187,82 +191,20 @@ fn parse_ast(expr: syn::Expr,
             let body = closure.body;
             parse_ast(*body, lock_subst.clone(), orderings.clone())
         },
-        Expr::MethodCall(m) => {
-            let receiver = m.clone().receiver;
-
-            let mut r1 = parse_ast(*receiver.clone(), lock_subst.clone(), orderings.clone());
-
-            let method_ident = m.method.to_string();
-
-            if method_ident.clone() == "lock" {
-                let lock_name = match *receiver {
-                    Path(p) => {
-                        let path = String::from(&p.path.segments[0].ident.to_string());
-                        path
-                    },
-                    _ => String::from("")
-                };
-                // check for a valid lock identifier here, if not valid, panic
-                if lock_subst.contains_key(&lock_name.clone()) {
-                    // if the lock is valid, we need to append to the list of valid lock orderings
-                    let mut tmp = orderings.clone();
-                    let mut tmp_vec = vec![lock_name.clone()];
-                    //tmp.append(&tmp_vec);
-                    dbg!("{:?}", r1.clone());
-                    r1.insert(r1.len(), vec![String::from(lock_name.clone())]);
-                } else {
-                    panic!("Invalid lock acquired: {:?}", m.clone());
-                }
-            }
-            
-            r1
-        },/*
-        Expr::ExprMatch(exprmatch) => {
-            let expr1 = exprmatch.expr;
-
-            let mut r1 = parse_ast(expr1, lock_subst.clone(), orderings.clone());
-
-            for arm in exprmatch.arms {
-                let body = *arm.body;
-                let r2 = parse_ast(body, lock_subst.clone(), orderings.clone());
-                if r2.len() > 0 {
-                    r1.extend(r2);
-                }
-            }
-
-            r1
-        }, */
-        Expr::Unsafe(_) => {
-            panic!("unsafe block inside threads macro is not permitted!");
-        },
-        /*
-        We do not handle the following cases:
-
-        Macros - we do not expand macros here
-
-        */
-        _ => {
-            //dbg!("other!");
+        Expr::Lit(_) => {
             vec![]
         },
-    };
-
-    /*
-    let mut tmp = vec![];
-    for sub_lst in lst.clone() {
-        dbg!("{:?}", sub_lst.clone());
-        if sub_lst.clone().len() > 0 {
-            tmp.extend(Vec::from(sub_lst));
+        Expr::Path(_) => {
+            vec![]
+        },
+        _ => {
+            panic!("unsupported expression found!: {:?}", expr);
         }
-    }
-    dbg!("{:?}", tmp.clone());
-    dbg!("{:?}", ret.clone());
-
-    vec![tmp]
-    */
-
-    ret.extend(lst);
-    ret
+    };
+    println!("{:?}", result);
+    let mut return_val = orderings.clone();
+    return_val.extend(result);
+    return_val.to_vec()
 }
 
 // in your proc-macro crate
@@ -282,7 +224,7 @@ pub fn threads(input: TokenStream) -> TokenStream {
     let data = Regex::new(r"\((.*?)\)").unwrap();
     let identifier_regex = Regex::new(r"(.*?)\s*\(").unwrap();
     for a in input.clone().into_iter() {
-        dbg!("capture group: {}", &a);
+        //dbg!("capture group: {}", &a);
         // if lock decl block, add lock values to block
         if re.is_match(&a.to_string()) {
             let a_str = &a.to_string(); 
@@ -294,8 +236,8 @@ pub fn threads(input: TokenStream) -> TokenStream {
                                     .get(1).map_or("", |m| m.as_str()); 
                     let final_ident = identifier_regex.captures(s.trim()).unwrap()
                                                        .get(1).map_or("", |m| m.as_str());
-                    dbg!("{}", final_ident);
-                    dbg!("{}", data);
+                    //dbg!("{}", final_ident);
+                    //dbg!("{}", data);
                     locks.insert(String::from(final_ident), String::from(data));
                 } else {
                     panic!("Invalidly formatted lock declaration section: locks = {identifier(data)...}");
@@ -342,14 +284,15 @@ pub fn threads(input: TokenStream) -> TokenStream {
             let expr = syn::parse_str::<Expr>(&a.to_string()).unwrap();
             // parse the AST
             //let ord = coalesce(parse_ast(expr.clone(), locks.clone(), vec![]));
-            orderings.extend(parse_ast(expr.clone(), locks.clone(), vec![]));
-            let preamble = match block_preamble.clone() {
-                Some(p) => {
+            let temp: Vec<Vec<String>> = vec![];
+            orderings.extend(parse_ast(expr.clone(), locks.clone(), temp));
+            match block_preamble.clone() {
+                Some(_) => {
 
                     // for each lock, we need to clone it
                     let mut cloned_lock_builder = vec![];
                     let mut internal_lock_builder = vec![];
-                    for (k, v) in &locks {
+                    for (k, _) in &locks {
                         let varname = format_ident!("_thread_{}_lock_{}", count.to_string(), k);
                         let lockid = format_ident!("_threads_macro_{}", k);
                         let q = quote! {
@@ -411,7 +354,7 @@ pub fn threads(input: TokenStream) -> TokenStream {
     };
 
     let mut export_lock_builder = vec![];
-    for (k, v) in &locks {
+    for (k, _) in &locks {
         let varname = format_ident!("_export_threads_lock_{}", k);
         let lockid = format_ident!("_threads_macro_{}", k);
         let export_var_name = format_ident!("{}", k);

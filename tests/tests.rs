@@ -3,7 +3,6 @@
 extern crate compiletest_rs as compiletest;
 
 use std::path::PathBuf;
-use compiletest_rs::common::Mode::*;
 
 fn run_mode(mode: &'static str) {
 	let mut config = compiletest::Config::default();
