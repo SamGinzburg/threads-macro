@@ -54,6 +54,8 @@ fn parse_stmts_vec(stmts: Vec<syn::Stmt>,
                 let init = l.clone().init;
                 match init {
                     Some((_, expr)) => {
+                        // TODO: when binding lets, we need to keep track of them
+                        // We disallow direct calls
                         parse_ast(*expr, lock_subst.clone(), in_lst.clone())
                     },
                     None => {
@@ -98,6 +100,7 @@ fn parse_stmts_vec(stmts: Vec<syn::Stmt>,
 fn parse_ast(expr: syn::Expr,
              lock_subst: HashMap<String, String>,
              orderings: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    println!("{:?}", expr.clone());
     let result = match expr {
         Expr::Block(e) => {
             parse_stmts_vec(e.block.stmts, lock_subst.clone(), orderings.clone())
@@ -129,12 +132,16 @@ fn parse_ast(expr: syn::Expr,
             ret
         },
         /*
-         * Method calls are tricky, we want to ensure the following properties
+         * Method calls are tricky, we want to ensure the following properties:
          * 1) We can allow a lock reference to be borrowed, but only 1 at a time
          * 2) We want to track all <identifier>.lock() function calls to extract
          *    lock orderings.
          * 3) When we do call <identifier>.lock(), we want to ensure that
          *    <identifier> is in the valid subset of static identifiers.
+         * 4) We disallow indirect function calls. We accomplish this by tracking
+         *    all let bindings, and preventing the receiver from being an identifier
+         *    that was assigned to a local variable.
+         * 5) We disallow Arc::clone from being used on lock references.
          */
         Expr::MethodCall(m) => {
             let receiver = m.clone().receiver;
