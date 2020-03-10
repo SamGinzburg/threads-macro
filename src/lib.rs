@@ -22,8 +22,13 @@ use syn::export::TokenStream2;
 
 fn extend_orderings(first: Vec<Vec<String>>, second: Vec<Vec<String>>) -> Vec<Vec<String>> {
     let mut final_lst: Vec<Vec<String>> = vec![];
+    println!("{:?}, {:?}", first.clone(), second.clone());
 
-    if first.len() > 0 {
+    if first.len() > 0 && second.len() == 0 {
+        final_lst = first;
+    } else if first.len() == 0 && second.len() > 0 {
+        final_lst = second;
+    } else if first.len() > 0 && second.len() > 0 {
         for string_one in &first {
             for string_two in &second {
                 let mut temp1: Vec<String> = string_one.clone();
@@ -31,8 +36,7 @@ fn extend_orderings(first: Vec<Vec<String>>, second: Vec<Vec<String>>) -> Vec<Ve
                 final_lst.push(temp1);
             }
         }
-    } else {
-        final_lst = second;
+
     }
 
     final_lst
@@ -96,7 +100,6 @@ fn parse_ast(expr: syn::Expr,
              orderings: Vec<Vec<String>>) -> Vec<Vec<String>> {
     let result = match expr {
         Expr::Block(e) => {
-            //dbg!("block found! {:?}", e);
             parse_stmts_vec(e.block.stmts, lock_subst.clone(), orderings.clone())
         },
         Expr::If(e) => {
@@ -183,7 +186,54 @@ fn parse_ast(expr: syn::Expr,
 
             r1
         },
+        Expr::Call(c) => {
+            println!("{:?}", c.clone());
+            let mut arg_lst: Vec<Vec<String>> = vec![];
+            let mut arg_ctr = 0;
+            /*
+             * Here we want to enforce the following property
+             * 1) We want to ensure that only 1 lock reference can be passed down into a function
+             *    at any given time.
+             * 
+             *    We can accomplish this by searching each lock argument for scanning the argument
+             *    list for lock identifiers, and ensuring only 1 argument has a valid lock identifier.
+             * 
+             *    We prevent the copying of lock references using Arc::clone.  In addition, when
+             *    parsing statements, we prevent lock references from being assigned to new 'let'
+             *    bindings. The combination of these two actions are what allow us to perform 
+             */
+
+            // first, check the arguments for Arc::clone 
+            for argument in c.clone().args {
+                // traverse the argument AST, add each lock
+                let result = parse_ast(argument.clone(), lock_subst.clone(), orderings.clone());
+                arg_lst.extend(result.clone());
+
+                /*
+                 * If one argument returns more than one lock identifier, we will overapproximate
+                 * and assume that more than one lock reference is being passed down
+                 */
+                if result.len() > 1 {
+                    panic!("More than one lock acquired in function arguments!");
+                }
+                if result.len() > 0 {
+                    arg_ctr += 1;
+                }
+                
+            }
+
+            // Only 1 argument should ever contain a lock reference!
+            if arg_ctr > 1 {
+                panic!("More than one lock acquired in function arguments!");
+            }
+
+            // if the arguments all check out, we can just return 
+            let mut r1 = parse_ast(*c.func, lock_subst.clone(), orderings.clone());
+            r1.extend(arg_lst);
+            r1
+        }
         Expr::Match(m) => {
+            // TODO: need to parse each match arm!!!
             let expr = m.expr;
             parse_ast(*expr, lock_subst.clone(), orderings.clone())
         },
@@ -191,11 +241,19 @@ fn parse_ast(expr: syn::Expr,
             let body = closure.body;
             parse_ast(*body, lock_subst.clone(), orderings.clone())
         },
-        Expr::Lit(_) => {
+        Expr::Lit(l) => {
+            println!("{:?}", l);
             vec![]
         },
-        Expr::Path(_) => {
+        Expr::Path(p) => {
+            println!("{:?}", p);
             vec![]
+        },
+        Expr::Reference(r) => {
+            parse_ast(*r.expr, lock_subst.clone(), orderings.clone())
+        },
+        Expr::Unary(u) => {
+            parse_ast(*u.expr, lock_subst.clone(), orderings.clone())
         },
         _ => {
             panic!("unsupported expression found!: {:?}", expr);
