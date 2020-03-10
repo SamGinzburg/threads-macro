@@ -22,7 +22,6 @@ use syn::export::TokenStream2;
 
 fn extend_orderings(first: Vec<Vec<String>>, second: Vec<Vec<String>>) -> Vec<Vec<String>> {
     let mut final_lst: Vec<Vec<String>> = vec![];
-    println!("{:?}, {:?}", first.clone(), second.clone());
 
     if first.len() > 0 && second.len() == 0 {
         final_lst = first;
@@ -50,12 +49,12 @@ fn parse_stmts_vec(stmts: Vec<syn::Stmt>,
         //println!("{:?}", statement);
         let orderings = match statement {
             Local(l) => {
-                let pat = l.clone().pat;
+                //let pat = l.clone().pat;
                 let init = l.clone().init;
                 match init {
                     Some((_, expr)) => {
                         // TODO: when binding lets, we need to keep track of them
-                        // We disallow direct calls
+                        // We must disallow direct calls
                         parse_ast(*expr, lock_subst.clone(), in_lst.clone())
                     },
                     None => {
