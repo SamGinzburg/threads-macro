@@ -240,8 +240,12 @@ fn parse_ast(expr: syn::Expr,
         }
         Expr::Match(m) => {
             // TODO: need to parse each match arm!!!
-            let expr = m.expr;
-            parse_ast(*expr, lock_subst.clone(), orderings.clone())
+            let mut return_lst: Vec<Vec<String>> = vec![];
+            let r1 = parse_ast(*m.expr, lock_subst.clone(), orderings.clone());
+            for arm in m.arms {
+                return_lst.extend(parse_ast(*arm.body, lock_subst.clone(), orderings.clone()));
+            }
+            extend_orderings(r1, return_lst)
         },
         Expr::Closure(closure) => {
             let body = closure.body;
@@ -250,6 +254,16 @@ fn parse_ast(expr: syn::Expr,
         Expr::Lit(l) => {
             println!("{:?}", l);
             vec![]
+        },
+        Expr::AssignOp(a_op) => {
+            /*
+             * https://doc.rust-lang.org/reference/expressions.html
+             * AssignOps such as '+=' are evaluated right-to-left
+             */
+            let mut r = parse_ast(*a_op.right, lock_subst.clone(), orderings.clone());
+            let l = parse_ast(*a_op.left, lock_subst.clone(), orderings.clone());
+            r.extend(l);
+            r
         },
         Expr::Path(p) => {
             println!("{:?}", p);
