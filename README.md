@@ -2,6 +2,8 @@
 
 This macro utilizes Rust's type system to provide a DSL that guarentees the absence of all deadlocks for a set of statically declared locks at compile time. The DSL is a significant subset of the safe Rust language, and should be easy to use for existing Rust programmers.
 
+I would like to emphasize that for now, this project is a WIP and not fully complete yet. There are likely bugs / missing features as well as a lack of any clear formalization for now.
+
 # Why?
 
 The primary existing deadlock detection tool for Rust code (parking_lot crate) checks for deadlocks dynamically as opposed to statically. There are many deadlock detection tools for C++/C available as well, although they operate dynamically as well. Static analysis tools such as clang/coverity exist, but they do not guarentee the absence of deadlocks.
