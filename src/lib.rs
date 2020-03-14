@@ -15,10 +15,12 @@ use syn::Expr;
 use syn::Stmt::*;
 use syn::Expr::*;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use z3::{Config, Context};
 use solver::solve_constraints;
 use quote::{quote, format_ident};
 use syn::export::TokenStream2;
+use syn::Pat::Ident;
 
 fn extend_orderings(first: Vec<Vec<String>>, second: Vec<Vec<String>>) -> Vec<Vec<String>> {
     let mut final_lst: Vec<Vec<String>> = vec![];
@@ -45,11 +47,17 @@ fn parse_stmts_vec(stmts: Vec<syn::Stmt>,
                    lock_subst: HashMap<String, String>,
                    in_lst: Vec<Vec<String>>) -> Vec<Vec<String>> {
     let mut final_orderings: Vec<Vec<String>> = in_lst.clone();
+    let mut local_bindings: HashSet<String> = HashSet::new();
+
     for statement in stmts {
-        println!("{:?}", statement);
         let orderings = match statement {
             Local(l) => {
-                //let pat = l.clone().pat;
+                let pat = l.clone().pat;
+                match pat {
+                    Ident(i) => println!("{:?}", local_bindings.insert(i.ident.to_string())),
+                    _ => panic!("parse_stmts_vec: Local binding pattern not yet implemented!"),
+                };
+                
                 let init = l.clone().init;
                 match init {
                     Some((_, expr)) => {
@@ -150,6 +158,7 @@ fn parse_ast(expr: syn::Expr,
             /*
              * If we find a lock() call, add the identifier to the current set of lock
              * orderings.
+             * TODO: fix: &p.path.segments[0], need to handle all cases
              */
             if method_ident.clone() == "lock" {
                 let lock_name = match *receiver {
@@ -162,6 +171,8 @@ fn parse_ast(expr: syn::Expr,
 
                 if lock_subst.contains_key(&lock_name.clone()) {
                     r1.push(vec![lock_name.clone()]);
+                } else {
+                    panic!("Calling <ident>.lock() on non-whitelisted identifiers is not permitted");
                 }
             } else if method_ident.clone() == "clone" {
                 let lock_name = match *receiver {
