@@ -9,14 +9,14 @@ use threads_macro::threads;
 fn main() {
     threads!({locks = {a(0), b(0), c(0)}}, {
         if true {
-            a.lock().unwrap();
-            b.lock().unwrap();
+            let test1 = a.lock().unwrap();
+            let test2 = b.lock().unwrap();
 
             println!("{}", text);
             println!("this is a test!");
         } else {
-            a.lock().unwrap();
-            a.lock().unwrap();
+            let test1 = a.lock().unwrap();
+            let test2 = a.lock().unwrap();
         }
     });
 }

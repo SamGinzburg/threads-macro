@@ -22,40 +22,40 @@ fn main() {
     threads!({locks = {a(0), b(0), c(0), d(0), e(0)}}, {
        loop {
 		   println!("think");
-		   a.lock().unwrap();
-		   b.lock().unwrap();
+		   let test1 = a.lock().unwrap();
+		   let test2 = b.lock().unwrap();
 		   println!("eat");
 		   sleep(1000);
 	   }
 	}, {
 		loop {
 			println!("think");
-			b.lock().unwrap();
-			c.lock().unwrap();
+			let test1 = b.lock().unwrap();
+			let test2 = c.lock().unwrap();
 			println!("eat");
 			sleep(1000);
 		}
 	}, {
 		loop {
 			println!("think");
-			c.lock().unwrap();
-			d.lock().unwrap();
+			let test1 = c.lock().unwrap();
+			let test2 = d.lock().unwrap();
 			println!("eat");
 			sleep(1000);
 		}
 	}, {
 		loop {
 			println!("think");
-			d.lock().unwrap();
-			e.lock().unwrap();
+			let test1 = d.lock().unwrap();
+			let test2 = e.lock().unwrap();
 			println!("eat");
 			sleep(1000);
 		}
 	}, {
 		loop {
 			println!("think");
-			e.lock().unwrap();
-			a.lock().unwrap();
+			let test1 = e.lock().unwrap();
+			let test2 = a.lock().unwrap();
 			println!("eat");
 			sleep(1000);
 		}

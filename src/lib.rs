@@ -46,7 +46,7 @@ fn parse_stmts_vec(stmts: Vec<syn::Stmt>,
                    in_lst: Vec<Vec<String>>) -> Vec<Vec<String>> {
     let mut final_orderings: Vec<Vec<String>> = in_lst.clone();
     for statement in stmts {
-        //println!("{:?}", statement);
+        println!("{:?}", statement);
         let orderings = match statement {
             Local(l) => {
                 //let pat = l.clone().pat;
@@ -99,7 +99,7 @@ fn parse_stmts_vec(stmts: Vec<syn::Stmt>,
 fn parse_ast(expr: syn::Expr,
              lock_subst: HashMap<String, String>,
              orderings: Vec<Vec<String>>) -> Vec<Vec<String>> {
-    println!("{:?}", expr.clone());
+    //println!("{:?}", expr.clone());
     let result = match expr {
         Expr::Block(e) => {
             parse_stmts_vec(e.block.stmts, lock_subst.clone(), orderings.clone())
@@ -197,6 +197,29 @@ fn parse_ast(expr: syn::Expr,
             let mut arg_lst: Vec<Vec<String>> = vec![];
             let mut arg_ctr = 0;
             /*
+             * Here we restrict the usage of Arc::clone, to prevent lock references
+             * from being bound to new locals. Arc::clone is the only way to clone
+             * an Arc pointer.
+             */
+            match *(c.clone().func) {
+                Expr::Path(p) => {
+                    /*
+                     * We need to check if any two adjacent elements of segments are equal to
+                     * Arc::clone because "::std::sync::Arc::clone(ident);" is also valid.
+                     */
+                    if p.path.segments.len() >= 2 {
+                        for idx in 0..p.path.segments.len() - 1 {
+                            if p.path.segments[idx].ident == "Arc" &&
+                            p.path.segments[idx+1].ident  == "clone" {
+                                panic!("Calling Arc::clone inside threads! is not permitted")
+                            }
+                        }
+                    }
+                },
+                _ => panic!("Expr::call func is not a ExprPath"),
+            };
+
+            /*
              * Here we want to enforce the following property
              * 1) We want to ensure that only 1 lock reference can be passed down into a function
              *    at any given time.
@@ -255,6 +278,9 @@ fn parse_ast(expr: syn::Expr,
             println!("{:?}", l);
             vec![]
         },
+        Expr::Paren(p) => {
+            parse_ast(*p.expr, lock_subst.clone(), orderings.clone())
+        },
         Expr::AssignOp(a_op) => {
             /*
              * https://doc.rust-lang.org/reference/expressions.html
@@ -302,7 +328,6 @@ pub fn threads(input: TokenStream) -> TokenStream {
     let data = Regex::new(r"\((.*?)\)").unwrap();
     let identifier_regex = Regex::new(r"(.*?)\s*\(").unwrap();
     for a in input.clone().into_iter() {
-        //dbg!("capture group: {}", &a);
         // if lock decl block, add lock values to block
         if re.is_match(&a.to_string()) {
             let a_str = &a.to_string(); 
@@ -314,8 +339,6 @@ pub fn threads(input: TokenStream) -> TokenStream {
                                     .get(1).map_or("", |m| m.as_str()); 
                     let final_ident = identifier_regex.captures(s.trim()).unwrap()
                                                        .get(1).map_or("", |m| m.as_str());
-                    //dbg!("{}", final_ident);
-                    //dbg!("{}", data);
                     locks.insert(String::from(final_ident), String::from(data));
                 } else {
                     panic!("Invalidly formatted lock declaration section: locks = {identifier(data)...}");
@@ -337,10 +360,6 @@ pub fn threads(input: TokenStream) -> TokenStream {
                 let varname = format_ident!("_threads_macro_{}", k);
                 let data = syn::parse_str::<Expr>(&v.to_string()).unwrap();
 
-                // this goes at the very top of the macro
-                //dbg!("{:?}", varname.clone());
-                //dbg!("{:?}", data.clone());
-
                 let q = quote! {
                     let #varname = ::std::sync::Arc::new(::std::sync::Mutex::new(#data));
                 };
@@ -361,7 +380,6 @@ pub fn threads(input: TokenStream) -> TokenStream {
             // for each thread block, extract lock orderings & conditions
             let expr = syn::parse_str::<Expr>(&a.to_string()).unwrap();
             // parse the AST
-            //let ord = coalesce(parse_ast(expr.clone(), locks.clone(), vec![]));
             let temp: Vec<Vec<String>> = vec![];
             orderings.extend(parse_ast(expr.clone(), locks.clone(), temp));
             match block_preamble.clone() {
