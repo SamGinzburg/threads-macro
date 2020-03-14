@@ -163,6 +163,19 @@ fn parse_ast(expr: syn::Expr,
                 if lock_subst.contains_key(&lock_name.clone()) {
                     r1.push(vec![lock_name.clone()]);
                 }
+            } else if method_ident.clone() == "clone" {
+                let lock_name = match *receiver {
+                    Path(p) => {
+                        let path = String::from(&p.path.segments[0].ident.to_string());
+                        path
+                    },
+                    _ => String::from("")
+                };
+
+                if lock_subst.contains_key(&lock_name.clone()) {
+                    // if we are calling <lock ident>.clone(), this is the same as Arc::clone
+                    panic!("Calling <lock ident>.clone() inside threads! is not permitted")
+                }
             }
             r1
         },
