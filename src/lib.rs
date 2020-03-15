@@ -45,9 +45,10 @@ fn extend_orderings(first: Vec<Vec<String>>, second: Vec<Vec<String>>) -> Vec<Ve
 
 fn parse_stmts_vec(stmts: Vec<syn::Stmt>,
                    lock_subst: HashMap<String, String>,
-                   in_lst: Vec<Vec<String>>) -> Vec<Vec<String>> {
+                   in_lst: Vec<Vec<String>>) -> (Vec<Vec<String>>, Vec<String>) {
     let mut final_orderings: Vec<Vec<String>> = in_lst.clone();
     let mut local_bindings: HashSet<String> = HashSet::new();
+    let mut final_idents: Vec<String> = vec![];
 
     for statement in stmts {
         let orderings = match statement {
@@ -66,12 +67,12 @@ fn parse_stmts_vec(stmts: Vec<syn::Stmt>,
                         parse_ast(*expr, lock_subst.clone(), in_lst.clone())
                     },
                     None => {
-                        vec![]
+                        (vec![], vec![])
                     },
                 }
             },
             Item(i) => {
-                vec![]
+                (vec![], vec![])
             },
             Expr(nested_e) => {
                 parse_ast(nested_e, lock_subst.clone(), in_lst.clone())
@@ -80,6 +81,9 @@ fn parse_stmts_vec(stmts: Vec<syn::Stmt>,
                 parse_ast(nested_e, lock_subst.clone(), in_lst.clone())
             },
         };
+
+        let (orderings, idents) = orderings;
+
         /*
          * At the end of each iteration we have a new set of orderings for each statement
          * since each statement can be another block of expressions.
@@ -88,9 +92,10 @@ fn parse_stmts_vec(stmts: Vec<syn::Stmt>,
          * we get a new set of orderings: [["a", "b", "b"], ["a", "b", "c"]]
          */
         final_orderings = extend_orderings(final_orderings.clone(), orderings.clone());
+        final_idents.extend(idents);
     }
 
-    final_orderings
+    (final_orderings, final_idents)
 }
 
 /*
@@ -106,7 +111,7 @@ fn parse_stmts_vec(stmts: Vec<syn::Stmt>,
  */
 fn parse_ast(expr: syn::Expr,
              lock_subst: HashMap<String, String>,
-             orderings: Vec<Vec<String>>) -> Vec<Vec<String>> {
+             orderings: Vec<Vec<String>>) -> (Vec<Vec<String>>, Vec<String>) {
     //println!("{:?}", expr.clone());
     let result = match expr {
         Expr::Block(e) => {
@@ -114,20 +119,29 @@ fn parse_ast(expr: syn::Expr,
         },
         Expr::If(e) => {
             let mut ret: Vec<Vec<String>> = vec![];
+            let mut identifier_vec: Vec<String> = vec![];
+
             let cond = e.cond;
             let br1 = e.then_branch.stmts;
             let br2 = e.else_branch;
 
-            let r1 = parse_ast(*cond, lock_subst.clone(), orderings.clone());
-            let r2 = parse_stmts_vec(br1, lock_subst.clone(), orderings.clone());
-            let r3 = match br2 {
+            let (r1, ident1) = parse_ast(*cond, lock_subst.clone(), orderings.clone());
+            let (r2, ident2) = parse_stmts_vec(br1, lock_subst.clone(), orderings.clone());
+            let (r3, ident3) = match br2 {
                 Some((_, expr)) => {
                     parse_ast(*expr, lock_subst.clone(), orderings.clone())
                 }
                 None => {
-                    vec![]
+                    (vec![], vec![])
                 },
             };
+
+            /*
+             * Overapproximate identifiers found
+             */
+            identifier_vec.extend(ident1);
+            identifier_vec.extend(ident2);
+            identifier_vec.extend(ident3);
 
             let mut r4: Vec<Vec<String>> = r1.clone();
             r4.extend(r2.clone());
@@ -136,7 +150,7 @@ fn parse_ast(expr: syn::Expr,
             r5.extend(r3.clone());
             ret.extend(r4);
             ret.extend(r5);
-            ret
+            (ret, vec![])
         },
         /*
          * Method calls are tricky, we want to ensure the following properties:
@@ -152,8 +166,26 @@ fn parse_ast(expr: syn::Expr,
          */
         Expr::MethodCall(m) => {
             let receiver = m.clone().receiver;
-            let mut r1 = parse_ast(*receiver.clone(), lock_subst.clone(), orderings.clone());
+            let mut identifier_vec: Vec<String> = vec![];
+
+            let (mut r1, ident1) = parse_ast(*receiver.clone(), lock_subst.clone(), orderings.clone());
+            identifier_vec.extend(ident1);
+
             let method_ident = m.method.to_string();
+
+            for arg in m.args {
+                let (temp, ident_temp) = parse_ast(arg, lock_subst.clone(), orderings.clone());
+                identifier_vec.extend(ident_temp);
+                r1.extend(temp);
+            }
+
+            // filter identifier_vec to include only valid lock identifiers
+            let filtered_idents = identifier_vec.clone().into_iter()
+                                                .filter(|i| lock_subst.contains_key(&i.clone()))
+                                                .collect::<Vec<String>>();
+            if filtered_idents.len() >= 2 {
+                panic!("More than one lock identifier passed as a method call argument!");
+            }
 
             /*
              * If we find a lock() call, add the identifier to the current set of lock
@@ -188,18 +220,22 @@ fn parse_ast(expr: syn::Expr,
                     panic!("Calling <lock ident>.clone() inside threads! is not permitted")
                 }
             }
-            r1
+            (r1, identifier_vec)
         },
         Expr::While(while_expr) => {
             let cond = while_expr.cond;
             let body = while_expr.body;
+            let mut identifier_vec: Vec<String> = vec![];
 
-            let mut r1 = parse_ast(*cond, lock_subst.clone(), orderings.clone());
-            let r2 = parse_stmts_vec(body.stmts, lock_subst.clone(), orderings.clone());
+            let (mut r1, ident1) = parse_ast(*cond, lock_subst.clone(), orderings.clone());
+            let (r2, ident2) = parse_stmts_vec(body.stmts, lock_subst.clone(), orderings.clone());
+
+            identifier_vec.extend(ident1);
+            identifier_vec.extend(ident2);
 
             r1.extend(r2);
 
-            r1
+            (r1, identifier_vec)
         },
         Expr::Loop(l) => {
             let body = l.body;
@@ -208,17 +244,21 @@ fn parse_ast(expr: syn::Expr,
         Expr::ForLoop(fl) => {
             let expr = fl.expr;
             let body = fl.body;
+            let mut identifier_vec: Vec<String> = vec![];
+
             
-            let mut r1 = parse_ast(*expr, lock_subst.clone(), orderings.clone());
-            let r2 = parse_stmts_vec(body.stmts, lock_subst.clone(), orderings.clone());
+            let (mut r1, ident1) = parse_ast(*expr, lock_subst.clone(), orderings.clone());
+            let (r2, ident2) = parse_stmts_vec(body.stmts, lock_subst.clone(), orderings.clone());
+            identifier_vec.extend(ident1);
+            identifier_vec.extend(ident2);
 
             r1.extend(r2);
 
-            r1
+            (r1, identifier_vec)
         },
         Expr::Call(c) => {
-            println!("{:?}", c.clone());
             let mut arg_lst: Vec<Vec<String>> = vec![];
+            let mut identifier_vec: Vec<String> = vec![];
             let mut arg_ctr = 0;
             /*
              * Here we restrict the usage of Arc::clone, to prevent lock references
@@ -259,8 +299,9 @@ fn parse_ast(expr: syn::Expr,
             // first, check the arguments for Arc::clone 
             for argument in c.clone().args {
                 // traverse the argument AST, add each lock
-                let result = parse_ast(argument.clone(), lock_subst.clone(), orderings.clone());
+                let (result, ident1) = parse_ast(argument.clone(), lock_subst.clone(), orderings.clone());
                 arg_lst.extend(result.clone());
+                identifier_vec.extend(ident1);
 
                 /*
                  * If one argument returns more than one lock identifier, we will overapproximate
@@ -275,49 +316,73 @@ fn parse_ast(expr: syn::Expr,
                 
             }
 
+            //println!("identifier vec:\t{:?}", identifier_vec);
+            // filter identifier_vec to include only valid lock identifiers
+            let filtered_idents = identifier_vec.clone().into_iter()
+                                                .filter(|i| lock_subst.contains_key(&i.clone()))
+                                                .collect::<Vec<String>>();
+            if filtered_idents.len() >= 2 {
+                panic!("More than one lock identifier passed as function argument!");
+            }
+
             // Only 1 argument should ever contain a lock reference!
             if arg_ctr > 1 {
                 panic!("More than one lock acquired in function arguments!");
             }
 
             // if the arguments all check out, we can just return 
-            let mut r1 = parse_ast(*c.func, lock_subst.clone(), orderings.clone());
+            let (mut r1, ident3) = parse_ast(*c.func, lock_subst.clone(), orderings.clone());
             r1.extend(arg_lst);
-            r1
+            identifier_vec.extend(ident3);
+
+            (r1, identifier_vec)
         }
         Expr::Match(m) => {
             // TODO: need to parse each match arm!!!
             let mut return_lst: Vec<Vec<String>> = vec![];
-            let r1 = parse_ast(*m.expr, lock_subst.clone(), orderings.clone());
+            let mut identifier_vec: Vec<String> = vec![];
+
+            let (r1, ident1) = parse_ast(*m.expr, lock_subst.clone(), orderings.clone());
+            identifier_vec.extend(ident1);
             for arm in m.arms {
-                return_lst.extend(parse_ast(*arm.body, lock_subst.clone(), orderings.clone()));
+                let (temp, ident2) = parse_ast(*arm.body, lock_subst.clone(), orderings.clone());
+                return_lst.extend(temp);
+                identifier_vec.extend(ident2);
             }
-            extend_orderings(r1, return_lst)
+            (extend_orderings(r1, return_lst), identifier_vec)
         },
         Expr::Closure(closure) => {
             let body = closure.body;
             parse_ast(*body, lock_subst.clone(), orderings.clone())
         },
-        Expr::Lit(l) => {
-            println!("{:?}", l);
-            vec![]
+        Expr::Lit(_) => {
+            (vec![], vec![])
         },
         Expr::Paren(p) => {
             parse_ast(*p.expr, lock_subst.clone(), orderings.clone())
         },
         Expr::AssignOp(a_op) => {
+            let mut identifier_vec: Vec<String> = vec![];
+
             /*
              * https://doc.rust-lang.org/reference/expressions.html
              * AssignOps such as '+=' are evaluated right-to-left
              */
-            let mut r = parse_ast(*a_op.right, lock_subst.clone(), orderings.clone());
-            let l = parse_ast(*a_op.left, lock_subst.clone(), orderings.clone());
+            let (mut r, ident1) = parse_ast(*a_op.right, lock_subst.clone(), orderings.clone());
+            let (l, ident2) = parse_ast(*a_op.left, lock_subst.clone(), orderings.clone());
+            identifier_vec.extend(ident1);
+            identifier_vec.extend(ident2);
+
             r.extend(l);
-            r
+            (r, identifier_vec)
         },
         Expr::Path(p) => {
-            println!("{:?}", p);
-            vec![]
+            let mut temp_vec = vec![];
+            for segment in p.path.segments {
+                //println!("{:?}", segment.ident);
+                temp_vec.push(segment.ident.to_string());
+            }
+            (vec![], temp_vec)
         },
         Expr::Reference(r) => {
             parse_ast(*r.expr, lock_subst.clone(), orderings.clone())
@@ -325,14 +390,22 @@ fn parse_ast(expr: syn::Expr,
         Expr::Unary(u) => {
             parse_ast(*u.expr, lock_subst.clone(), orderings.clone())
         },
+        Expr::Struct(s) => {
+            match s.clone().rest {
+                Some(b) => {
+                    parse_ast(*b, lock_subst.clone(), orderings.clone())
+                },
+                None => (vec![], vec![]),
+            }
+        }
         _ => {
             panic!("unsupported expression found!: {:?}", expr);
         }
     };
-    println!("{:?}", result);
+    let (temp_orderings, identifiers_seen) = result;
     let mut return_val = orderings.clone();
-    return_val.extend(result);
-    return_val.to_vec()
+    return_val.extend(temp_orderings);
+    (return_val.to_vec(), identifiers_seen)
 }
 
 // in your proc-macro crate
@@ -405,7 +478,8 @@ pub fn threads(input: TokenStream) -> TokenStream {
             let expr = syn::parse_str::<Expr>(&a.to_string()).unwrap();
             // parse the AST
             let temp: Vec<Vec<String>> = vec![];
-            orderings.extend(parse_ast(expr.clone(), locks.clone(), temp));
+            let (temp_parse_result, _) = parse_ast(expr.clone(), locks.clone(), temp);
+            orderings.extend(temp_parse_result);
             match block_preamble.clone() {
                 Some(_) => {
 
