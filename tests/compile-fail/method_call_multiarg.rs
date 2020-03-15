@@ -21,9 +21,9 @@ impl User {
 fn main() {
     threads!({locks = {a(0 as u64), b(0), c(0)}}, {
         let test = User{username: "test".to_string()};
-        test.acquire(&b, &a);
+		test.acquire(&b, &a);
     }, {
         let test = User{username: "test".to_string()};
-        test.acquire(&b, &a);
+		test.acquire(&b, &a);
     });
 }
