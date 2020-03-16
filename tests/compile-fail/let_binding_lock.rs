@@ -16,5 +16,5 @@ fn main() {
         let test1 = lock_clone(&a);
         let test2 = test1.lock().unwrap();
         let test3 = a.lock().unwrap();
-	});
+    });
 }

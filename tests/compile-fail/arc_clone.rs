@@ -8,9 +8,9 @@ use threads_macro::threads;
 use std::thread::sleep;
 
 fn main() {
-    threads!({locks = {a(0), b(0), c(0), d(0), e(0)}}, {
+	threads!({locks = {a(0), b(0), c(0), d(0), e(0)}}, {
 		let test = Arc::clone(&a);
-        let test1 = test.lock().unwrap();
-        let test2 = a.lock().unwrap();
+		let test1 = test.lock().unwrap();
+		let test2 = a.lock().unwrap();
 	});
 }

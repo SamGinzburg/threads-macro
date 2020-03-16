@@ -16,6 +16,6 @@ fn main() {
     threads!({locks = {a(0 as u64), b(0), c(0)}}, {
         acquire(&a, &b);
     }, {
-		acquire(&b, &a);
+        acquire(&b, &a);
     });
 }

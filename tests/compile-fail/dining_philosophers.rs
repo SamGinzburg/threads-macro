@@ -19,14 +19,14 @@ fn main() {
 		person 5: e, a
 
 	 */
-    threads!({locks = {a(0), b(0), c(0), d(0), e(0)}}, {
-       loop {
-		   println!("think");
-		   let test1 = a.lock().unwrap();
-		   let test2 = b.lock().unwrap();
-		   println!("eat");
-		   sleep(1000);
-	   }
+	threads!({locks = {a(0), b(0), c(0), d(0), e(0)}}, {
+		loop {
+			println!("think");
+			let test1 = a.lock().unwrap();
+			let test2 = b.lock().unwrap();
+			println!("eat");
+			sleep(1000);
+		}
 	}, {
 		loop {
 			println!("think");

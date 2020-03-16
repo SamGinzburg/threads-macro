@@ -14,8 +14,8 @@ fn main() {
     threads!({locks = {a(0 as u64), b(0), c(0)}}, {
         increment_ten(&mut *a.lock().unwrap(), &*b.lock().unwrap());
     }, {
-		let mut data = a.lock().unwrap();
-		let mut data2 = b.lock().unwrap();
+        let mut data = a.lock().unwrap();
+        let mut data2 = b.lock().unwrap();
         increment_ten(&mut *data, data2);
     });
 }

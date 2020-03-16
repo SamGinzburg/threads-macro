@@ -21,6 +21,6 @@ fn main() {
             a.lock().unwrap();
             b.lock().unwrap();
         }
-	});
+    });
 }
 
