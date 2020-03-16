@@ -303,13 +303,6 @@ fn parse_ast(expr: syn::Expr,
                 arg_lst.extend(result.clone());
                 identifier_vec.extend(ident1);
 
-                /*
-                 * If one argument returns more than one lock identifier, we will overapproximate
-                 * and assume that more than one lock reference is being passed down
-                 */
-                if result.len() > 1 {
-                    panic!("More than one lock acquired in function arguments!");
-                }
                 if result.len() > 0 {
                     arg_ctr += 1;
                 }
